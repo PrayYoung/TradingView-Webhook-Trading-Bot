@@ -1,133 +1,49 @@
+import os
+import alpaca_trade_api as tradeapi
 import logbot
-import json, os, config
-from ftxapi import Ftx
-from bybitapi import ByBit
 
-subaccount_name = 'SUBACCOUNT_NAME'
-leverage = 1.0
-risk = 1.0 / 100
-api_key = 'API_KEY'
-api_secret = 'API_SECRET'
+# 从环境变量获取 API 凭证
+ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY")
+ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY")
+ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+
+api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version='v2')
 
 
-# ================== SET GLOBAL VARIABLES ==================
+def order(payload):
+    symbol = payload.get("ticker")
+    action = payload.get("action", "BUY").upper()
+    qty = payload.get("qty", 1)  # 默认买入1股
+    price = payload.get("price", None)
+    strategy = payload.get("strategy", "")
+    subaccount = payload.get("subaccount", "default")
 
+    logbot.logs(f"📩 Incoming Order:\nSubaccount: {subaccount}\nStrategy: {strategy}\n{action} {qty} x {symbol} @ {price}")
 
-def global_var(payload):
-    global subaccount_name
-    global leverage
-    global risk
-    global api_key
-    global api_secret
-
-    subaccount_name = payload['subaccount']
-
-    if subaccount_name == 'Testing':
-        leverage = os.environ.get('LEVERAGE_TESTING', config.LEVERAGE_TESTING)
-        leverage = float(leverage)
-
-        risk = os.environ.get('RISK_TESTING', config.RISK_TESTING)
-        risk = float(risk) / 100
-
-        api_key = os.environ.get('API_KEY_TESTING', config.API_KEY_TESTING)
-
-        api_secret = os.environ.get('API_SECRET_TESTING', config.API_SECRET_TESTING)
-
-    elif subaccount_name == 'MYBYBITACCOUNT':
-        leverage = os.environ.get('LEVERAGE_MYBYBITACCOUNT', config.LEVERAGE_MYBYBITACCOUNT)
-        leverage = float(leverage)
-
-        risk = os.environ.get('RISK_MYBYBITACCOUNT', config.RISK_MYBYBITACCOUNT)
-        risk = float(risk) / 100
-
-        api_key = os.environ.get('API_KEY_MYBYBITACCOUNT', config.API_KEY_MYBYBITACCOUNT)
-
-        api_secret = os.environ.get('API_SECRET_MYBYBITACCOUNT', config.API_SECRET_MYBYBITACCOUNT)
-
-    else:
-        logbot.logs(">>> /!\ Subaccount name not found", True)
-        return {
-            "success": False,
-            "error": "subaccount name not found"
-        }
-           
-    return {
-        "success": True
-    }
-
-
-# ================== MAIN ==================
-
-
-def order(payload: dict):
-    #   DEFINE GLOBAL VARIABLE
-    glob = global_var(payload)
-    if not glob['success']:
-        return glob
-    
-    init_var = {
-        'subaccount_name': subaccount_name,
-        'leverage': leverage,
-        'risk': risk,
-        'api_key': api_key,
-        'api_secret': api_secret
-    }
-    exchange = payload['exchange']
-    
-    #   SET EXCHANGE CLASS
-    exchange_api = None
     try:
-        if exchange.upper() == 'FTX':
-            exchange_api = Ftx(init_var)
-        elif exchange.upper() == 'BYBIT':
-            exchange_api = ByBit(init_var)
+        if action == "BUY":
+            api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side='buy',
+                type='market',
+                time_in_force='gtc'
+            )
+            return {"success": True, "message": f"✅ Bought {qty} x {symbol}"}
+
+        elif action == "SELL":
+            api.submit_order(
+                symbol=symbol,
+                qty=qty,
+                side='sell',
+                type='market',
+                time_in_force='gtc'
+            )
+            return {"success": True, "message": f"✅ Sold {qty} x {symbol}"}
+
+        else:
+            return {"success": False, "message": f"❌ Unknown action: {action}"}
+
     except Exception as e:
-        logbot.logs('>>> /!\ An exception occured : {}'.format(e), True)
-        return {
-            "success": False,
-            "error": str(e)
-        }
-
-    logbot.logs('>>> Exchange : {}'.format(exchange))
-    logbot.logs('>>> Subaccount : {}'.format(subaccount_name))
-
-    #   FIND THE APPROPRIATE TICKER IN DICTIONNARY
-    ticker = ""
-    if exchange.upper() == 'BYBIT':
-        ticker = payload['ticker']
-    else:
-        with open('tickers.json') as json_file:
-            tickers = json.load(json_file)
-            try:
-                ticker = tickers[exchange.lower()][payload['ticker']]
-            except Exception as e:
-                logbot.logs('>>> /!\ An exception occured : {}'.format(e), True)
-                return {
-                    "success": False,
-                    "error": str(e)
-                }
-    logbot.logs(">>> Ticker '{}' found".format(ticker))
-
-    #   ALERT MESSAGE CONDITIONS
-    if payload['message'] == 'entry':
-        logbot.logs(">>> Order message : 'entry'")
-        exchange_api.exit_position(ticker)
-        orders = exchange_api.entry_position(payload, ticker)
-        return orders
-
-    elif payload['message'] == 'exit':
-        logbot.logs(">>> Order message : 'exit'")
-        exit_res = exchange_api.exit_position(ticker)
-        return exit_res
-
-    elif payload['message'][-9:] == 'breakeven':
-        logbot.logs(">>> Order message : 'breakeven'")
-        breakeven_res = exchange_api.breakeven(payload, ticker)
-        return breakeven_res
-    
-    else:
-        logbot.logs(f">>> Order message : '{payload['message']}'")
-
-    return {
-        "message": payload['message']
-    }
+        logbot.logs(f"🚫 Order failed: {e}", True)
+        return {"success": False, "message": f"Error: {e}"}
