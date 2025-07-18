@@ -32,9 +32,12 @@ def tradingview_webhook():
             "message": "invalid passphrase"
         }
 
-    orders = order(data)
-    print(orders)
-    return orders
+    print("✅ Webhook payload received:", data)
+    return {
+    "success": True,
+    "message": "Webhook received"
+}
+
 
 @app.route("/tradingview-to-discord-study", methods=['POST'])
 def discord_study_tv():
