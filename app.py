@@ -7,6 +7,7 @@ from supabase import create_client, Client
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_API_KEY")
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+WORKER_SECRET = os.getenv("WORKER_SECRET", "defaultsecret")
 
 app = Flask(__name__)
 
@@ -93,3 +94,28 @@ def discord_study_tv():
 
     logbot.study_alert(json.dumps(data), chart_url)
     return {"success": True}
+
+
+@app.route("/run-worker", methods=["GET"])
+def run_worker():
+    key = request.args.get("key")
+    if key != WORKER_SECRET:
+        return {"success": False, "message": "Unauthorized"}, 403
+
+    try:
+        result = supabase.table("webhook_queue").select("*").eq("status", "pending").execute()
+        for row in result.data:
+            payload = row["data"]
+            logbot.logs(f"[Worker] Executing order: {payload}")
+            try:
+                result = order(payload)
+                supabase.table("webhook_queue").update({"status": "processed"}).eq("id", row["id"]).execute()
+                logbot.logs(f"[Worker] ✅ Order placed and marked processed")
+            except Exception as e:
+                logbot.logs(f"[Worker] ❌ Order error: {e}", True)
+                supabase.table("webhook_queue").update({"status": "error"}).eq("id", row["id"]).execute()
+        return {"success": True, "message": "Worker run complete"}
+    except Exception as e:
+        logbot.logs(f"[Worker] ❌ Supabase poll error: {e}", True)
+        return {"success": False, "message": "Worker failed"}
+
