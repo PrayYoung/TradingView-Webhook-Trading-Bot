@@ -2,8 +2,25 @@ import logbot
 import json, os, config
 from flask import Flask, request
 from orderapi import order
+from supabase import create_client, Client
+
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_API_KEY")
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 app = Flask(__name__)
+
+def enqueue_to_supabase(data):
+    try:
+        response = supabase.table("webhook_queue").insert({
+            "data": data,
+            "status": "pending"
+        }).execute()
+        logbot.logs("✅ Alert queued to Supabase")
+        return {"success": True, "message": "Order queued", "id": response.data[0]["id"]}
+    except Exception as e:
+        logbot.logs(f">>> /!\\ Supabase insert error: {e}", True)
+        return {"success": False, "message": "Supabase insert error"}
 
 @app.route("/")
 def hello_trader():
@@ -43,11 +60,14 @@ def tradingview_webhook():
         logbot.logs(f">>> /!\\ Invalid action: {data['action']}", True)
         return {"success": False, "message": "Action must be BUY or SELL"}
 
-    # Step 6: 下单
-    orders = order(data)
-    print("✅ Order response:", orders)
-    logbot.logs(f"✅ Order response: {orders}")
-    return orders
+    # # Step 6: 下单
+    # orders = order(data)
+    # print("✅ Order response:", orders)
+    # logbot.logs(f"✅ Order response: {orders}")
+    # return orders
+
+    # # Step 6, 写进database
+    return enqueue_to_supabase(data)
 
 
 @app.route("/tradingview-to-discord-study", methods=['POST'])
