@@ -12,12 +12,20 @@ api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_vers
 
 def get_latest_price(symbol):
     try:
-        last_quote = api.get_latest_trade(symbol)
-        return float(last_quote.price)
-    except Exception as e:
-        logbot.logs(f"❌ Failed to get latest price for {symbol}: {e}", True)
-        return None
+        # Step 1: Try as stock
+        trade = api.get_latest_trade(symbol)
+        return float(trade.price)
+    except Exception as e_stock:
+        logbot.logs(f"⚠️ Stock price fetch failed for {symbol}, trying crypto...")
 
+        try:
+            # Step 2: Try as crypto
+            quote = api.get_latest_crypto_quote(symbol)
+            mid_price = (float(quote.bid_price) + float(quote.ask_price)) / 2
+            return mid_price
+        except Exception as e_crypto:
+            logbot.logs(f"❌ Failed to get any price for {symbol}: {e_crypto}", True)
+            return None
 
 def order(payload):
     symbol = payload.get("ticker")
