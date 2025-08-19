@@ -50,7 +50,7 @@ def tradingview_webhook():
         data['subaccount'] = 'default'
 
     # Step 4: 基础字段校验
-    required_fields = ['ticker', 'action', 'qty']
+    required_fields = ['ticker', 'action']
     missing = [f for f in required_fields if f not in data]
     if missing:
         logbot.logs(f">>> /!\\ Missing fields: {missing}", True)
