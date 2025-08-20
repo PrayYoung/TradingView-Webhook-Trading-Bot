@@ -1,31 +1,42 @@
-import os
-import alpaca_trade_api as tradeapi
-import logbot
+import os, logbot
+from alpaca.trading.client import TradingClient
+from alpaca.trading.requests import (
+    MarketOrderRequest,
+    LimitOrderRequest,
+    StopOrderRequest
+)
+from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
+from alpaca.data.requests import CryptoLatestQuoteRequest, StockLatestBarRequest
 
-# 从环境变量获取 API 凭证
-ALPACA_API_KEY = os.environ.get("ALPACA_API_KEY")
-ALPACA_SECRET_KEY = os.environ.get("ALPACA_SECRET_KEY")
-ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+# order type: "market" / "limit" / "stop"
+# time in force: "gtc" / "day" / "ioc" / "fok" / "opg" / "cls"
+#                 Good Till Cancel/ Day/ Immediate Or Cancel / Fill or Kill/ On the Open/ On the Close
 
-api = tradeapi.REST(ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_BASE_URL, api_version='v2')
 
+# 环境变量
+ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
+ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
+
+trading_client = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=True)
+stock_client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+crypto_client = CryptoHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
 
 def get_latest_price(symbol):
     try:
-        # Step 1: Try as stock
-        trade = api.get_latest_trade(symbol)
-        return float(trade.price)
-    except Exception as e_stock:
-        logbot.logs(f"⚠️ Stock price fetch failed for {symbol}, trying crypto...")
-
+        # Try crypto first
+        quote = crypto_client.get_crypto_latest_quote(
+            CryptoLatestQuoteRequest(symbol_or_symbols=[symbol])
+        )[symbol]
+        return (quote.bid_price + quote.ask_price) / 2
+    except Exception as e:
+        logbot.logs(f"[Price] Crypto quote failed for {symbol}: {e}", True)
         try:
-            # Step 2: Try as crypto
-            quote = api.get_latest_crypto_quote(symbol)
-            mid_price = (float(quote.bid_price) + float(quote.ask_price)) / 2
-            return mid_price
-        except Exception as e_crypto:
-            logbot.logs(f"❌ Failed to get any price for {symbol}: {e_crypto}", True)
-            return None
+            bar = stock_client.get_latest_bar(StockLatestBarRequest(symbol_or_symbols=[symbol]))
+            return float(bar[symbol].close)
+        except Exception as e2:
+            logbot.logs(f"[Price] Stock quote failed for {symbol}: {e2}", True)
+    return None
 
 def order(payload):
     symbol = payload.get("ticker")
@@ -33,11 +44,15 @@ def order(payload):
     strategy = payload.get("strategy", "")
     subaccount = payload.get("subaccount", "default")
 
-    # 可选字段
     percentage = payload.get("percentage", None)
     qty = payload.get("qty", None)
+    order_type = payload.get("order_type", "market").lower()
+    tif = payload.get("time_in_force", "gtc").lower()
 
-    logbot.logs(f"📩 Incoming Order:\nSubaccount: {subaccount}\nStrategy: {strategy}\n{action} {qty if qty else ''} x {symbol}")
+    limit_price = payload.get("limit_price", None)
+    stop_price = payload.get("stop_price", None)
+
+    logbot.logs(f"📩 Incoming Order:\nSubaccount: {subaccount}\nStrategy: {strategy}\n{action} {qty if qty else ''} x {symbol} ({order_type.upper()})")
 
     try:
         if action == "BUY":
@@ -45,36 +60,53 @@ def order(payload):
                 price = get_latest_price(symbol)
                 if not price:
                     raise Exception("No price data")
-                buying_power = float(api.get_account().cash)
+                buying_power = float(trading_client.get_account().cash)
                 qty = round((buying_power * float(percentage)) / price, 6)
             elif qty is None:
                 qty = 1
-
-            api.submit_order(
-                symbol=symbol,
-                qty=qty,
-                side='buy',
-                type='market',
-                time_in_force='gtc'
-            )
-            return {"success": True, "message": f"✅ Bought {qty} x {symbol}"}
+            side = OrderSide.BUY
 
         elif action == "SELL":
-            # always full sell
-            position = api.get_position(symbol)
+            position = trading_client.get_open_position(symbol)
             qty = float(position.qty)
-
-            api.submit_order(
-                symbol=symbol,
-                qty=qty,
-                side='sell',
-                type='market',
-                time_in_force='gtc'
-            )
-            return {"success": True, "message": f"✅ Sold {qty} x {symbol}"}
+            side = OrderSide.SELL
 
         else:
             return {"success": False, "message": f"❌ Unknown action: {action}"}
+
+        # 构建请求对象
+        if order_type == "market":
+            order_request = MarketOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=side,
+                time_in_force=TimeInForce(tif)
+            )
+        elif order_type == "limit":
+            if not limit_price:
+                return {"success": False, "message": "❌ Missing limit_price for limit order"}
+            order_request = LimitOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=side,
+                time_in_force=TimeInForce(tif),
+                limit_price=limit_price
+            )
+        elif order_type == "stop":
+            if not stop_price:
+                return {"success": False, "message": "❌ Missing stop_price for stop order"}
+            order_request = StopOrderRequest(
+                symbol=symbol,
+                qty=qty,
+                side=side,
+                time_in_force=TimeInForce(tif),
+                stop_price=stop_price
+            )
+        else:
+            return {"success": False, "message": f"❌ Unsupported order type: {order_type}"}
+
+        trading_client.submit_order(order_request)
+        return {"success": True, "message": f"✅ Submitted {order_type} order for {qty} x {symbol}"}
 
     except Exception as e:
         logbot.logs(f"🚫 Order failed: {e}", True)
