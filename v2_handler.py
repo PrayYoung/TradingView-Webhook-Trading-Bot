@@ -6,11 +6,13 @@ import requests
 
 SUPABASE_URL = os.environ["SUPABASE_URL"]
 SUPABASE_KEY = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
-WEBHOOK_PASSPHRASE_V2 = os.environ.get("WEBHOOK_PASSPHRASE_V2", "duguai-v2")
 HEADER_TOKEN_V2 = os.environ.get("WEBHOOK_HEADER_TOKEN_V2", "")
 ALPACA_BASE_URL = os.environ.get("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
 ALPACA_KEY = os.environ["ALPACA_KEY_ID"]
 ALPACA_SECRET = os.environ["ALPACA_SECRET_KEY"]
+WEBHOOK_PASSPHRASE_V2 = os.environ.get("WEBHOOK_PASSPHRASE_V2")
+if not WEBHOOK_PASSPHRASE_V2:
+    raise RuntimeError("WEBHOOK_PASSPHRASE_V2 not set")
 
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
