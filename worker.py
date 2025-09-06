@@ -7,6 +7,8 @@ from flask import Blueprint, request, jsonify
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 # Prefer service role for worker; fallback to anon
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("SUPABASE_API_KEY")
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError("Need SUPABASE_URL and a Supabase key (service_role preferred)")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # --- V1 polling loop (unchanged) ---

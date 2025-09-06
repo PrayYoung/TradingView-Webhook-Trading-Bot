@@ -6,7 +6,9 @@ import requests
 
 # --- Env & Clients ---
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
+SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_API_KEY")
+if not SUPABASE_URL or not SUPABASE_KEY:
+    raise RuntimeError("Need SUPABASE_URL and a Supabase key (service_role preferred)")
 WEBHOOK_PASSPHRASE_V2 = os.environ.get("WEBHOOK_PASSPHRASE_V2", None)
 HEADER_TOKEN_V2 = os.environ.get("WEBHOOK_HEADER_TOKEN_V2", "")
 WORKER_URL = os.environ.get("WORKER_URL", "")
