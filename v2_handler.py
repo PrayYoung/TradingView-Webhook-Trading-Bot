@@ -24,6 +24,11 @@ def _dedup_exists(key: str) -> bool:
     d = sb.table("signals_raw").select("id").eq("dedup_key", key).execute().data
     return bool(d)
 
+def _ms_to_utc_iso(ms) -> str:
+    # 容忍字符串/浮点；统一转 int 毫秒
+    ms = int(ms)
+    dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+    return dt.isoformat()  # e.g. "2025-09-06T23:40:12.345000+00:00"
 
 def _insert_signal_raw(p: dict, key: str):
     sb.table("signals_raw").insert({
@@ -35,7 +40,7 @@ def _insert_signal_raw(p: dict, key: str):
         "atr": p.get("atr"),
         "risk_pct": p.get("risk_pct"),
         "trail_atr_mult": p.get("trail_atr_mult"),
-        "bar_time": datetime.fromtimestamp(int(p["bar_time"]) / 1000, tz=timezone.utc),
+        "bar_time": _ms_to_utc_iso(p["bar_time"]),
         "dedup_key": key,
         "source": "tv-v2",
         "raw": p,
@@ -66,7 +71,7 @@ def _enqueue_order(data: dict) -> str:
         "atr": data.get("atr"),
         "risk_pct": data.get("risk_pct"),
         "trail_atr_mult": data.get("trail_atr_mult"),
-        "bar_time": datetime.fromtimestamp(int(data["bar_time"]) / 1000, tz=timezone.utc),
+        "bar_time": _ms_to_utc_iso(data["bar_time"]),
         "subaccount": data.get("subaccount", "default"),
         "raw": data,
     }).execute()
