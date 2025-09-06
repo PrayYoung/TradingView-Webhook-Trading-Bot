@@ -3,6 +3,8 @@ import json, os, config
 from flask import Flask, request
 from orderapi import order
 from supabase import create_client, Client
+from v2_handler import tv_webhook_v2
+
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_API_KEY")
@@ -119,3 +121,7 @@ def run_worker():
         logbot.logs(f"[Worker] ❌ Supabase poll error: {e}", True)
         return {"success": False, "message": "Worker failed"}
 
+
+@app.route("/v2/tradingview-to-webhook-order", methods=["POST"])
+def v2_entry():
+    return tv_webhook_v2()
