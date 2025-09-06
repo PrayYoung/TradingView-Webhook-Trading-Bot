@@ -4,6 +4,7 @@ from flask import Flask, request
 from orderapi import order
 from supabase import create_client, Client
 from v2_handler import tv_webhook_v2
+from worker import worker_bp
 
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -12,6 +13,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 WORKER_SECRET = os.getenv("WORKER_SECRET", "defaultsecret")
 
 app = Flask(__name__)
+app.register_blueprint(worker_bp)
 
 def enqueue_to_supabase(data):
     try:
@@ -122,6 +124,13 @@ def run_worker():
         return {"success": False, "message": "Worker failed"}
 
 
-@app.route("/v2/tradingview-to-webhook-order", methods=["POST"])
+# v2 route with optional path token prefix
+_path_token = os.getenv("WEBHOOK_PATH_TOKEN", "")
+if _path_token:
+    v2_path = f"/v2/{_path_token}/tradingview-to-webhook-order"
+else:
+    v2_path = "/v2/tradingview-to-webhook-order"
+
+@app.route(v2_path, methods=["POST"])
 def v2_entry():
     return tv_webhook_v2()

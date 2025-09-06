@@ -68,20 +68,64 @@ def _to_tif_enum(tif: str) -> TimeInForce:
         return TimeInForce.GTC
 
 # =========================
-# Env & Clients
+# Env resolution (multi-account)
 # =========================
-ALPACA_API_KEY = os.getenv("ALPACA_API_KEY")
-ALPACA_SECRET_KEY = os.getenv("ALPACA_SECRET_KEY")
-USE_PAPER = _parse_bool_env("USE_PAPER", True)
 
-trading_client = TradingClient(ALPACA_API_KEY, ALPACA_SECRET_KEY, paper=USE_PAPER)
-stock_client = StockHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
-crypto_client = CryptoHistoricalDataClient(ALPACA_API_KEY, ALPACA_SECRET_KEY)
+def _get_env_first(*names):
+    for n in names:
+        v = os.getenv(n)
+        if v is not None and v != "":
+            return v
+    return None
+
+def _resolve_alpaca_creds(alias: str):
+    """
+    Resolve Alpaca credentials for an alias (e.g., 'paper', 'live', 'default').
+    Supports both new and legacy env names and alias suffixes with __<alias>.
+    """
+    a = (alias or "default").strip().lower()
+
+    # Key ID
+    key = (
+        _get_env_first(f"ALPACA_KEY_ID__{a}", f"ALPACA_API_KEY__{a}")
+        or _get_env_first("ALPACA_KEY_ID", "ALPACA_API_KEY", "APCA_API_KEY_ID")
+    )
+    # Secret
+    secret = (
+        _get_env_first(f"ALPACA_SECRET_KEY__{a}", f"ALPACA_API_SECRET__{a}")
+        or _get_env_first("ALPACA_SECRET_KEY", "ALPACA_API_SECRET", "APCA_API_SECRET_KEY")
+    )
+
+    # Paper flag by base URL or explicit USE_PAPER
+    base_url = _get_env_first(f"ALPACA_BASE_URL__{a}", "ALPACA_BASE_URL") or ""
+    if base_url:
+        paper = ("paper" in base_url)
+    else:
+        paper_env = _get_env_first(f"USE_PAPER__{a}", "USE_PAPER")
+        paper = True if paper_env is None else _parse_bool_env(f"USE_PAPER__{a}", _parse_bool_env("USE_PAPER", True))
+
+    if not key or not secret:
+        raise RuntimeError(f"Missing Alpaca creds for alias '{a}'")
+    return key, secret, paper
+
+# Cache clients by alias
+_clients = {}
+
+def _get_clients(alias: str):
+    a = (alias or "default").strip().lower()
+    if a in _clients:
+        return _clients[a]
+    key, secret, paper = _resolve_alpaca_creds(a)
+    trading = TradingClient(key, secret, paper=paper)
+    stock = StockHistoricalDataClient(key, secret)
+    crypto = CryptoHistoricalDataClient(key, secret)
+    _clients[a] = (trading, stock, crypto)
+    return _clients[a]
 
 # =========================
 # Market Data
 # =========================
-def get_latest_price(symbol_raw: str):
+def get_latest_price(symbol_raw: str, stock_client: StockHistoricalDataClient, crypto_client: CryptoHistoricalDataClient):
     """
     先尝试加密（用带斜杠的对），失败再回退股票。
     """
@@ -134,13 +178,14 @@ def order(payload):
     symbol_trade = _norm_trade_symbol(symbol_raw)
 
     try:
+        trading_client, stock_client, crypto_client = _get_clients(subaccount)
         # ---------- 方向：BUY / SELL ----------
         if action == "BUY":
             # qty 明确则优先，其次 percentage，最后默认 1
             if qty_in is not None:
                 qty_dec = Decimal(str(qty_in))
             elif percentage:
-                price = get_latest_price(symbol_raw)
+                price = get_latest_price(symbol_raw, stock_client, crypto_client)
                 if not price:
                     raise Exception("No price data")
                 buying_power = Decimal(str(trading_client.get_account().cash))

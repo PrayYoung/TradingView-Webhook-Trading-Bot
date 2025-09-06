@@ -526,3 +526,47 @@ If it was interesting and you've learned something feel free to support me by se
 
 
 **Thank you for reading all the way through !**
+
+\n
+# v2 Queue Mode
+
+This repo now includes a v2 flow that does not place orders directly from the webhook. Instead, it enqueues validated alerts into Supabase (signals_raw for audit; order_queue when enabled) and then kicks a protected worker endpoint to process that single task.
+
+- Endpoint: `/v2/tradingview-to-webhook-order` (or `/v2/<WEBHOOK_PATH_TOKEN>/tradingview-to-webhook-order` if `WEBHOOK_PATH_TOKEN` is set)
+- Auth: requires `WEBHOOK_PASSPHRASE_V2` (>= 16 chars). Optionally validates header `X-Auth` or `X-Webhook-Token` when `WEBHOOK_HEADER_TOKEN_V2` is set.
+- Dedup: ignores duplicates using key `(strategy|ticker|timeframe|bar_time|action)`.
+- Queue: inserts into `signals_raw` always; inserts into `order_queue` when `account_state.trading_enabled=true` and the strategy is active.
+- Multi-account: include `"subaccount":"<alias>"` in the alert (e.g., `paper`, `live`, `default`). The worker uses that alias to select Alpaca creds from env.
+- Worker kick: best-effort POST to `/worker/kick` with the new queue id; protected by `WORKER_KICK_TOKEN`.
+
+Env to set:
+
+- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`
+- `WEBHOOK_PASSPHRASE_V2` (required, >=16), `WEBHOOK_HEADER_TOKEN_V2` (optional), `WEBHOOK_PATH_TOKEN` (optional)
+- `WORKER_URL`, `WORKER_KICK_TOKEN`
+- Alpaca credentials (alias-aware): default `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_BASE_URL`, `USE_PAPER`; alias overrides like `ALPACA_KEY_ID__paper`, `ALPACA_SECRET_KEY__paper`, `ALPACA_BASE_URL__paper`; legacy `APCA_API_KEY_ID`, `APCA_API_SECRET_KEY` remain supported.
+
+Quick test with curl (replace placeholders, uses current timestamp in ms):
+
+```
+curl -s -X POST \
+  "https://your-app.onrender.com/v2/tradingview-to-webhook-order" \
+  -H "Content-Type: application/json" \
+  -H "X-Auth: $WEBHOOK_HEADER_TOKEN_V2" \
+  -d '{
+    "passphrase":"'$WEBHOOK_PASSPHRASE_V2'",
+    "strategy":"RSI50",
+    "ticker":"AAPL",
+    "timeframe":"1h",
+    "action":"buy",
+    "bar_time":'$(($(date +%s%3N)))',
+    "price": 180.12,
+    "atr": 2.5,
+    "subaccount":"paper"
+  }'
+```
+
+- Start with trading disabled or strategy paused: expect only `signals_raw` insert and response `{"status":"[v2] trading_disabled"}` or `{"status":"[v2] strategy_paused"}`.
+- Then enable trading and the strategy: expect `{"status":"[v2] queued","id":"<uuid>"}`, and best-effort worker kick.
+
+Backward compatibility: v1 route (`/tradingview-to-webhook-order`) and `orderapi.py` remain functional. The worker’s original polling loop for `webhook_queue` is unchanged.
