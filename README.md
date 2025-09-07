@@ -570,3 +570,31 @@ curl -s -X POST \
 - Then enable trading and the strategy: expect `{"status":"[v2] queued","id":"<uuid>"}`, and best-effort worker kick.
 
 Backward compatibility: v1 route (`/tradingview-to-webhook-order`) and `orderapi.py` remain functional. The worker’s original polling loop for `webhook_queue` is unchanged.
+
+SQL migrations (run once in your DB):
+
+```
+-- orders: add client_order_id and unique index
+ALTER TABLE public.orders
+  ADD COLUMN IF NOT EXISTS client_order_id text;
+CREATE UNIQUE INDEX IF NOT EXISTS orders_client_order_id_uniq
+  ON public.orders (client_order_id)
+  WHERE client_order_id IS NOT NULL;
+
+-- order_queue: retries and scheduling
+ALTER TABLE public.order_queue
+  ADD COLUMN IF NOT EXISTS retry_count int DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS last_error text,
+  ADD COLUMN IF NOT EXISTS next_attempt_at timestamptz;
+CREATE INDEX IF NOT EXISTS order_queue_status_next_attempt_idx
+  ON public.order_queue (status, next_attempt_at);
+
+-- DLQ for failed tasks
+CREATE TABLE IF NOT EXISTS public.order_queue_dlq
+  (LIKE public.order_queue INCLUDING DEFAULTS INCLUDING CONSTRAINTS INCLUDING INDEXES);
+TRUNCATE public.order_queue_dlq; -- ensure empty on first create (optional)
+```
+
+Health check:
+
+- `GET /health` returns `{ ts, db_ok, queue_ready_cnt, alpaca_ping, worker_url_set, env_missing_hint }`

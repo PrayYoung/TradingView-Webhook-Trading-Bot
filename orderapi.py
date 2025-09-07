@@ -159,6 +159,9 @@ def order(payload):
     action = (payload.get("action", "BUY") or "").upper()
     strategy = payload.get("strategy", "")
     subaccount = payload.get("subaccount", "default")
+    client_order_id_in = payload.get("client_order_id")
+    if client_order_id_in:
+        client_order_id_in = str(client_order_id_in)[:48]
 
     percentage = payload.get("percentage", None)   # 0.3 表示 30%
     qty_in = payload.get("qty", None)              # 显式数量优先
@@ -234,7 +237,8 @@ def order(payload):
                 symbol=symbol_trade,
                 qty=qty_str,
                 side=side,
-                time_in_force=tif_enum
+                time_in_force=tif_enum,
+                client_order_id=client_order_id_in
             )
         elif order_type == "limit":
             if limit_price is None:
@@ -244,7 +248,8 @@ def order(payload):
                 qty=qty_str,
                 side=side,
                 time_in_force=tif_enum,
-                limit_price=str(limit_price)
+                limit_price=str(limit_price),
+                client_order_id=client_order_id_in
             )
         elif order_type == "stop":
             if stop_price is None:
@@ -254,7 +259,8 @@ def order(payload):
                 qty=qty_str,
                 side=side,
                 time_in_force=tif_enum,
-                stop_price=str(stop_price)
+                stop_price=str(stop_price),
+                client_order_id=client_order_id_in
             )
         else:
             return {"success": False, "message": f"❌ Unsupported order type: {order_type}"}

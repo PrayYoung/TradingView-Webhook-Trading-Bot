@@ -6,18 +6,18 @@ import requests
 
 # --- Env & Clients ---
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or os.environ.get("SUPABASE_API_KEY")
+SUPABASE_KEY = os.environ.get("SUPABASE_API_KEY")
 if not SUPABASE_URL or not SUPABASE_KEY:
-    raise RuntimeError("Need SUPABASE_URL and a Supabase key (service_role preferred)")
+    raise RuntimeError("SUPABASE_URL and SUPABASE_API_KEY must be set")
 WEBHOOK_PASSPHRASE_V2 = os.environ.get("WEBHOOK_PASSPHRASE_V2", None)
 HEADER_TOKEN_V2 = os.environ.get("WEBHOOK_HEADER_TOKEN_V2", "")
 WORKER_URL = os.environ.get("WORKER_URL", "")
-WORKER_KICK_TOKEN = os.environ.get("WORKER_KICK_TOKEN", "")
+WORKER_SECRET = os.environ.get("WORKER_SECRET", "")
 
 if not WEBHOOK_PASSPHRASE_V2 or len(WEBHOOK_PASSPHRASE_V2) < 16:
     raise RuntimeError("WEBHOOK_PASSPHRASE_V2 must be set and >=16 chars")
 if not SUPABASE_URL or not SUPABASE_KEY:
-    raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set for v2")
+    raise RuntimeError("SUPABASE_URL and SUPABASE_API_KEY must be set for v2")
 
 sb = create_client(SUPABASE_URL, SUPABASE_KEY)
 
@@ -81,13 +81,13 @@ def _enqueue_order(data: dict) -> str:
 
 
 def _kick_worker(queue_id: str):
-    if not WORKER_URL or not WORKER_KICK_TOKEN:
+    if not WORKER_URL or not WORKER_SECRET:
         return
     try:
         requests.post(
             f"{WORKER_URL.rstrip('/')}/worker/kick",
             json={"id": queue_id},
-            headers={"X-Worker-Token": WORKER_KICK_TOKEN},
+            headers={"X-Worker-Token": WORKER_SECRET},
             timeout=1.5,
         )
     except Exception:

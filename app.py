@@ -1,10 +1,12 @@
 import logbot
 import json, os, config
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from orderapi import order
 from supabase import create_client, Client
 from v2_handler import tv_webhook_v2
 from worker import worker_bp
+from datetime import datetime, timezone
+import requests
 
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -134,3 +136,62 @@ else:
 @app.route(v2_path, methods=["POST"])
 def v2_entry():
     return tv_webhook_v2()
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    ts = datetime.now(tz=timezone.utc).isoformat()
+    missing = []
+    for k in [
+        "SUPABASE_URL",
+        "SUPABASE_API_KEY",
+        "WORKER_URL",
+        "WORKER_SECRET",
+        "ALPACA_API_KEY",
+        "ALPACA_SECRET_KEY",
+        "ALPACA_BASE_URL",
+    ]:
+        if not os.getenv(k):
+            missing.append(k)
+
+    # db_ok and queue_ready_cnt
+    db_ok = False
+    queue_ready_cnt = 0
+    try:
+        # light query
+        supabase.table("order_queue").select("id").limit(1).execute()
+        db_ok = True
+        res = supabase.table("order_queue").select("id").eq("status", "ready").limit(1000).execute()
+        queue_ready_cnt = len(res.data or [])
+    except Exception:
+        db_ok = False
+
+    # Alpaca ping (optional)
+    alpaca_ping = None
+    ak = os.getenv("ALPACA_API_KEY")
+    sk = os.getenv("ALPACA_SECRET_KEY")
+    base = (os.getenv("ALPACA_BASE_URL") or "").rstrip("/")
+    if base.endswith("/v2"):
+        base = base[:-3]
+    if ak and sk and base:
+        try:
+            r = requests.get(
+                f"{base}/v2/account",
+                headers={
+                    "APCA-API-KEY-ID": ak,
+                    "APCA-API-SECRET-KEY": sk,
+                },
+                timeout=2,
+            )
+            alpaca_ping = r.status_code
+        except Exception:
+            alpaca_ping = None
+
+    return jsonify({
+        "ts": ts,
+        "db_ok": db_ok,
+        "queue_ready_cnt": queue_ready_cnt,
+        "alpaca_ping": alpaca_ping,
+        "worker_url_set": bool(os.getenv("WORKER_URL")),
+        "env_missing_hint": missing,
+    })
