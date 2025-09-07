@@ -4,9 +4,11 @@ from alpaca.trading.client import TradingClient
 from alpaca.trading.requests import (
     MarketOrderRequest,
     LimitOrderRequest,
-    StopOrderRequest
+    StopOrderRequest,
+    TakeProfitRequest,   # 新增：Bracket 的 TP 腿
+    StopLossRequest      # 新增：Bracket 的 SL 腿（非 StopOrderRequest）
 )
-from alpaca.trading.enums import OrderSide, TimeInForce
+from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass  # 新增 OrderClass
 from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
 from alpaca.data.requests import CryptoLatestQuoteRequest, StockLatestBarRequest
 
@@ -168,6 +170,14 @@ def order(payload):
     order_type = (payload.get("order_type", "market") or "").lower()
     tif = (payload.get("time_in_force", "gtc") or "gtc").lower()
 
+    # —— 兼容字段名：tp/sl 或 take_profit/stop_loss 或 *_px —— 
+    tp = payload.get("tp")
+    if tp is None:
+        tp = payload.get("take_profit") or payload.get("take_profit_px")
+    sl = payload.get("sl")
+    if sl is None:
+        sl = payload.get("stop_loss") or payload.get("stop_px")
+
     limit_price = payload.get("limit_price", None)
     stop_price = payload.get("stop_price", None)
 
@@ -232,7 +242,41 @@ def order(payload):
         tif_enum = _to_tif_enum(tif)
 
         # ---------- 构建订单 ----------
-        if order_type == "market":
+        # 优先：若传入了 tp/sl，则用 Bracket 订单（多空都支持）
+        if tp is not None and sl is not None:
+            if order_type == "limit":
+                if limit_price is None:
+                    return {"success": False, "message": "❌ Missing limit_price for limit bracket order"}
+                order_request = LimitOrderRequest(
+                    symbol=symbol_trade,
+                    qty=qty_str,
+                    side=side,
+                    time_in_force=tif_enum,
+                    limit_price=str(limit_price),
+                    client_order_id=client_order_id_in,
+                    order_class=OrderClass.BRACKET,
+                    take_profit=TakeProfitRequest(limit_price=float(tp)),
+                    # 如需止损限价，可加 limit_price=float(sl)
+                    stop_loss=StopLossRequest(stop_price=float(sl))
+                )
+                kind = "LIMIT BRACKET"
+            else:
+                # 默认用“市价 + bracket”
+                order_type = "market"
+                order_request = MarketOrderRequest(
+                    symbol=symbol_trade,
+                    qty=qty_str,
+                    side=side,
+                    time_in_force=tif_enum,
+                    client_order_id=client_order_id_in,
+                    order_class=OrderClass.BRACKET,
+                    take_profit=TakeProfitRequest(limit_price=float(tp)),
+                    stop_loss=StopLossRequest(stop_price=float(sl))
+                )
+                kind = "MARKET BRACKET"
+
+        # 否则：按你原来的三种单腿类型处理
+        elif order_type == "market":
             order_request = MarketOrderRequest(
                 symbol=symbol_trade,
                 qty=qty_str,
@@ -240,6 +284,7 @@ def order(payload):
                 time_in_force=tif_enum,
                 client_order_id=client_order_id_in
             )
+            kind = "MARKET"
         elif order_type == "limit":
             if limit_price is None:
                 return {"success": False, "message": "❌ Missing limit_price for limit order"}
@@ -251,6 +296,7 @@ def order(payload):
                 limit_price=str(limit_price),
                 client_order_id=client_order_id_in
             )
+            kind = "LIMIT"
         elif order_type == "stop":
             if stop_price is None:
                 return {"success": False, "message": "❌ Missing stop_price for stop order"}
@@ -262,13 +308,14 @@ def order(payload):
                 stop_price=str(stop_price),
                 client_order_id=client_order_id_in
             )
+            kind = "STOP"
         else:
             return {"success": False, "message": f"❌ Unsupported order type: {order_type}"}
 
         # ---------- 下单 ----------
         resp = trading_client.submit_order(order_request)
-        logbot.logs(f"✅ Submitted {order_type} order: {resp.id} {symbol_trade} x {qty_str}")
-        return {"success": True, "message": f"✅ Submitted {order_type} order for {qty_str} x {symbol_trade}"}
+        logbot.logs(f"✅ Submitted {kind} order: {resp.id} {symbol_trade} x {qty_str}")
+        return {"success": True, "message": f"✅ Submitted {kind} order for {qty_str} x {symbol_trade}"}
 
     except Exception as e:
         # 尽量把错误打全，包含规范化后的符号，便于定位

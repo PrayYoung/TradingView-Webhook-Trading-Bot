@@ -66,6 +66,14 @@ def _is_market_open(ts: datetime.datetime) -> bool:
     end = datetime.time(20, 0)
     return (t >= start) and (t <= end)
 
+def _safe_float(x, default=None):
+    try:
+        if x is None:
+            return default
+        return float(x)
+    except Exception:
+        return default
+
 def claim_task(queue_id: str) -> bool:
     try:
         res = (
@@ -109,12 +117,13 @@ def process_one_by_id(queue_id: str):
             except Exception:
                 pass
 
+        # -------- Build order payload (compute tp/sl if possible) --------
         payload = item.get("raw") or {}
         # Build idempotent client_order_id from queue_id
         qid_compact = queue_id.replace("-", "")
         client_order_id = ("q_" + qid_compact)[:30]
 
-        # Trading mode + base url guard
+        # Trading mode + base url guard（基于默认 base；若使用多账户，orderapi 内部会按 alias 取具体账户）
         trading_mode = (os.getenv("TRADING_MODE", "paper") or "paper").strip().lower()
         base_env = _normalize_base_url(os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets"))
         if trading_mode == "paper" and "paper-api.alpaca.markets" not in base_env:
@@ -126,18 +135,49 @@ def process_one_by_id(queue_id: str):
         if not _is_market_open(_now_utc()):
             raise Exception("market_closed")
 
-        # Call canonical order entry; pass through client_order_id
+        # 从队列字段推导 bracket 价位（若 price/atr/trail_atr_mult 齐备）
+        action = (item.get("action") or "").upper()
+        entry = _safe_float(item.get("price"))
+        atr = _safe_float(item.get("atr"))
+        trail_k = _safe_float(item.get("trail_atr_mult"))
+        r_mult = _safe_float(item.get("r_multiple_tp"), 2.0)  # 没有就用 2R
+
+        tp = sl = None
+        if entry is not None and atr is not None and trail_k is not None:
+            if action == "BUY":
+                sl = entry - atr * trail_k
+                risk = max(entry - sl, 0.01)
+                tp = entry + r_mult * risk
+            elif action == "SELL":
+                sl = entry + atr * trail_k
+                risk = max(sl - entry, 0.01)
+                tp = entry - r_mult * risk
+
+        # 把 risk_pct 作为资金百分比映射给 orderapi 的 percentage（最小改动）
+        pct = _safe_float(item.get("risk_pct"))
+        # 组装下单 payload
         payload_out = {
             "ticker": item.get("ticker"),
-            "action": (item.get("action") or "").upper(),
+            "action": action,
             "strategy": item.get("strategy"),
             "subaccount": item.get("subaccount", "default"),
             "client_order_id": client_order_id,
+            "order_type": "market",
+            "time_in_force": "day",
         }
+        if pct is not None:
+            payload_out["percentage"] = pct
+        if tp is not None and sl is not None:
+            payload_out["tp"] = tp
+            payload_out["sl"] = sl
+
         logbot.logs(
             f"[Worker] 🚀 v2 processing id={queue_id} clid={client_order_id} "
-            f"{payload_out.get('strategy')} {payload_out.get('ticker')} {payload_out.get('subaccount')}"
+            f"{payload_out.get('strategy')} {payload_out.get('ticker')} {payload_out.get('subaccount')} "
+            f"tp/sl={'on' if ('tp' in payload_out) else 'off'}"
         )
+
+        # ---------- Place order ----------
         result = order(payload_out)
 
         if result.get("success"):
