@@ -1,9 +1,12 @@
 import os, time, datetime
 from datetime import timezone
+from datetime import time as dtime
 from supabase import create_client
 from orderapi import order
 import logbot
 from flask import Blueprint, request, jsonify
+
+_last_report_key = None  # 全局变量：记录已发送日期
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_API_KEY")
@@ -242,6 +245,28 @@ def worker_kick():
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
+
+def _should_run_daily_report(now_utc):
+    # 设定触发时间（收盘后 20:10 UTC）
+    target = dtime(20, 10)
+    return (now_utc.time() >= target)
+
+def _try_run_daily_report_once_per_day():
+    global _last_report_key
+    now = datetime.datetime.now(timezone.utc)
+    key = now.strftime("%Y-%m-%d")
+    if _last_report_key == key:
+        return
+    if _should_run_daily_report(now):
+        try:
+            # 直接复用你 scripts/daily_report.py 里的 main()，或提取成可导入函数
+            from daily_report import main as run_report
+            run_report()
+            logbot.logs("[Report] ✅ daily report sent")
+            _last_report_key = key
+        except Exception as e:
+            logbot.logs(f"[Report] ❌ daily report error: {e}", True)
+
 if __name__ == "__main__":
     logbot.logs("[Worker] 🟢 Started polling for orders...")
     while True:
@@ -267,4 +292,7 @@ if __name__ == "__main__":
                 process_one_by_id(row["id"])
         except Exception as e:
             logbot.logs(f"[Worker] ❌ v2 poll error: {e}", True)
+        # 每天只运行一次的报表
+        _try_run_daily_report_once_per_day()
         time.sleep(2)
+
