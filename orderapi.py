@@ -225,7 +225,8 @@ def order(payload):
                 logbot.logs(f"[Order] client_order_id not supported, fallback: {e}")
                 return kind_local, no_id()
 
-        if tp is not None and sl is not None:
+        # 仅在 BUY 进场时使用 BRACKET；SELL 依旧为平仓，不做空
+        if (tp is not None and sl is not None) and side == OrderSide.BUY:
             if order_type == "limit":
                 if limit_price is None:
                     return {"success": False, "message": "❌ Missing limit_price for limit bracket order"}

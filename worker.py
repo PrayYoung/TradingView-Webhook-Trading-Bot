@@ -224,7 +224,7 @@ def process_one_by_id(queue_id: str):
         trading_mode = (os.getenv("TRADING_MODE", "paper") or "paper").strip().lower()
         alias_for_mode = item.get("subaccount", "default")
         try:
-            _k, _s, alias_base = resolve_alpaca_for_alias(alias_for_mode)
+            _k, _s, alias_base, _paper = resolve_alpaca_for_alias(alias_for_mode)
             base_env = _normalize_base_url(alias_base)
         except Exception:
             base_env = _normalize_base_url(os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets"))
@@ -233,9 +233,15 @@ def process_one_by_id(queue_id: str):
         if trading_mode == "live" and "paper-api.alpaca.markets" in base_env:
             raise Exception("mode_mismatch: live expected")
 
-        # Market hours guard
-        if not _is_market_open(_now_utc()):
-            raise Exception("market_closed")
+        # Market hours guard (skip for crypto symbols)
+        def _is_crypto_symbol(raw: str) -> bool:
+            s = (raw or "").strip().upper()
+            return ("/" in s) or s.endswith("USD") or s.endswith("USDT")
+
+        ticker_raw = item.get("ticker")
+        if not _is_crypto_symbol(ticker_raw):
+            if not _is_market_open(_now_utc()):
+                raise Exception("market_closed")
 
         # Risk guard (blocks new entries only; no auto-flatten here)
         try:
@@ -275,7 +281,8 @@ def process_one_by_id(queue_id: str):
             "subaccount": item.get("subaccount", "default"),
             "client_order_id": client_order_id,
             "order_type": "market",
-            "time_in_force": "day",
+            # Use GTC for crypto (Alpaca crypto doesn't support DAY); DAY for equities
+            "time_in_force": ("gtc" if _is_crypto_symbol(item.get("ticker")) else "day"),
         }
         if pct is not None:
             payload_out["percentage"] = pct
