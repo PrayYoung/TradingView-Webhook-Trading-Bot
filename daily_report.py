@@ -58,18 +58,7 @@ def aliases_from_env() -> List[str]:
     return [a.strip() for a in raw.split(",") if a.strip()]
 
 
-# -----------------------
-# Alpaca helpers
-# -----------------------
-def resolve_alpaca(alias: str):
-    a = (alias or "default").strip().lower()
-    key  = os.getenv(f"ALPACA_API_KEY__{a}")     or os.getenv("ALPACA_API_KEY")
-    sec  = os.getenv(f"ALPACA_SECRET_KEY__{a}")  or os.getenv("ALPACA_SECRET_KEY")
-    base = os.getenv(f"ALPACA_BASE_URL__{a}")    or os.getenv("ALPACA_BASE_URL")
-    base = normalize_base(base or "")
-    if not key or not sec or not base:
-        raise RuntimeError(f"Missing Alpaca creds for alias '{alias}'")
-    return key, sec, base
+from config import resolve_alpaca_for_alias
 
 def alpaca_get(base: str, key: str, sec: str, path: str, params=None, timeout=8) -> Any:
     url = f"{base}/v2{path if path.startswith('/') else '/'+path}"
@@ -83,7 +72,7 @@ def alpaca_get(base: str, key: str, sec: str, path: str, params=None, timeout=8)
     return r.json()
 
 def fetch_account_snapshot(alias: str) -> Dict[str, Any]:
-    key, sec, base = resolve_alpaca(alias)
+    key, sec, base, _paper = resolve_alpaca_for_alias(alias)
     acct = alpaca_get(base, key, sec, "/account")
     equity = float(acct.get("equity") or 0.0)
     last_equity = float(acct.get("last_equity") or equity)

@@ -11,6 +11,7 @@ from alpaca.trading.requests import (
 from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass  # 新增 OrderClass
 from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
 from alpaca.data.requests import CryptoLatestQuoteRequest, StockLatestBarRequest
+from config import resolve_alpaca_for_alias
 
 # =========================
 # Helpers
@@ -81,33 +82,7 @@ def _get_env_first(*names):
     return None
 
 def _resolve_alpaca_creds(alias: str):
-    """
-    Resolve Alpaca credentials for an alias (e.g., 'paper', 'live', 'default').
-    Supports both new and legacy env names and alias suffixes with __<alias>.
-    """
-    a = (alias or "default").strip().lower()
-
-    # Key ID
-    key = (
-        _get_env_first(f"ALPACA_KEY_ID__{a}", f"ALPACA_API_KEY__{a}")
-        or _get_env_first("ALPACA_KEY_ID", "ALPACA_API_KEY", "APCA_API_KEY_ID")
-    )
-    # Secret
-    secret = (
-        _get_env_first(f"ALPACA_SECRET_KEY__{a}", f"ALPACA_API_SECRET__{a}")
-        or _get_env_first("ALPACA_SECRET_KEY", "ALPACA_API_SECRET", "APCA_API_SECRET_KEY")
-    )
-
-    # Paper flag by base URL or explicit USE_PAPER
-    base_url = _get_env_first(f"ALPACA_BASE_URL__{a}", "ALPACA_BASE_URL") or ""
-    if base_url:
-        paper = ("paper" in base_url)
-    else:
-        paper_env = _get_env_first(f"USE_PAPER__{a}", "USE_PAPER")
-        paper = True if paper_env is None else _parse_bool_env(f"USE_PAPER__{a}", _parse_bool_env("USE_PAPER", True))
-
-    if not key or not secret:
-        raise RuntimeError(f"Missing Alpaca creds for alias '{a}'")
+    key, secret, _base, paper = resolve_alpaca_for_alias(alias)
     return key, secret, paper
 
 # Cache clients by alias
@@ -241,74 +216,126 @@ def order(payload):
         # ---------- TIF ----------
         tif_enum = _to_tif_enum(tif)
 
-        # ---------- 构建订单 ----------
-        # 优先：若传入了 tp/sl，则用 Bracket 订单（多空都支持）
+        # ---------- 构建订单（兼容旧 SDK 的 client_order_id） ----------
+        def _build(kind_local: str, with_id, no_id):
+            try:
+                req = with_id()
+                return kind_local, req
+            except Exception as e:
+                logbot.logs(f"[Order] client_order_id not supported, fallback: {e}")
+                return kind_local, no_id()
+
         if tp is not None and sl is not None:
             if order_type == "limit":
                 if limit_price is None:
                     return {"success": False, "message": "❌ Missing limit_price for limit bracket order"}
-                order_request = LimitOrderRequest(
+                kind, order_request = _build(
+                    "LIMIT BRACKET",
+                    lambda: LimitOrderRequest(
+                        symbol=symbol_trade,
+                        qty=qty_str,
+                        side=side,
+                        time_in_force=tif_enum,
+                        limit_price=str(limit_price),
+                        client_order_id=client_order_id_in,
+                        order_class=OrderClass.BRACKET,
+                        take_profit=TakeProfitRequest(limit_price=float(tp)),
+                        stop_loss=StopLossRequest(stop_price=float(sl))
+                    ),
+                    lambda: LimitOrderRequest(
+                        symbol=symbol_trade,
+                        qty=qty_str,
+                        side=side,
+                        time_in_force=tif_enum,
+                        limit_price=str(limit_price),
+                        order_class=OrderClass.BRACKET,
+                        take_profit=TakeProfitRequest(limit_price=float(tp)),
+                        stop_loss=StopLossRequest(stop_price=float(sl))
+                    )
+                )
+            else:
+                order_type = "market"
+                kind, order_request = _build(
+                    "MARKET BRACKET",
+                    lambda: MarketOrderRequest(
+                        symbol=symbol_trade,
+                        qty=qty_str,
+                        side=side,
+                        time_in_force=tif_enum,
+                        client_order_id=client_order_id_in,
+                        order_class=OrderClass.BRACKET,
+                        take_profit=TakeProfitRequest(limit_price=float(tp)),
+                        stop_loss=StopLossRequest(stop_price=float(sl))
+                    ),
+                    lambda: MarketOrderRequest(
+                        symbol=symbol_trade,
+                        qty=qty_str,
+                        side=side,
+                        time_in_force=tif_enum,
+                        order_class=OrderClass.BRACKET,
+                        take_profit=TakeProfitRequest(limit_price=float(tp)),
+                        stop_loss=StopLossRequest(stop_price=float(sl))
+                    )
+                )
+        elif order_type == "market":
+            kind, order_request = _build(
+                "MARKET",
+                lambda: MarketOrderRequest(
+                    symbol=symbol_trade,
+                    qty=qty_str,
+                    side=side,
+                    time_in_force=tif_enum,
+                    client_order_id=client_order_id_in
+                ),
+                lambda: MarketOrderRequest(
+                    symbol=symbol_trade,
+                    qty=qty_str,
+                    side=side,
+                    time_in_force=tif_enum,
+                )
+            )
+        elif order_type == "limit":
+            if limit_price is None:
+                return {"success": False, "message": "❌ Missing limit_price for limit order"}
+            kind, order_request = _build(
+                "LIMIT",
+                lambda: LimitOrderRequest(
                     symbol=symbol_trade,
                     qty=qty_str,
                     side=side,
                     time_in_force=tif_enum,
                     limit_price=str(limit_price),
-                    client_order_id=client_order_id_in,
-                    order_class=OrderClass.BRACKET,
-                    take_profit=TakeProfitRequest(limit_price=float(tp)),
-                    # 如需止损限价，可加 limit_price=float(sl)
-                    stop_loss=StopLossRequest(stop_price=float(sl))
-                )
-                kind = "LIMIT BRACKET"
-            else:
-                # 默认用“市价 + bracket”
-                order_type = "market"
-                order_request = MarketOrderRequest(
+                    client_order_id=client_order_id_in
+                ),
+                lambda: LimitOrderRequest(
                     symbol=symbol_trade,
                     qty=qty_str,
                     side=side,
                     time_in_force=tif_enum,
-                    client_order_id=client_order_id_in,
-                    order_class=OrderClass.BRACKET,
-                    take_profit=TakeProfitRequest(limit_price=float(tp)),
-                    stop_loss=StopLossRequest(stop_price=float(sl))
+                    limit_price=str(limit_price),
                 )
-                kind = "MARKET BRACKET"
-
-        # 否则：按你原来的三种单腿类型处理
-        elif order_type == "market":
-            order_request = MarketOrderRequest(
-                symbol=symbol_trade,
-                qty=qty_str,
-                side=side,
-                time_in_force=tif_enum,
-                client_order_id=client_order_id_in
             )
-            kind = "MARKET"
-        elif order_type == "limit":
-            if limit_price is None:
-                return {"success": False, "message": "❌ Missing limit_price for limit order"}
-            order_request = LimitOrderRequest(
-                symbol=symbol_trade,
-                qty=qty_str,
-                side=side,
-                time_in_force=tif_enum,
-                limit_price=str(limit_price),
-                client_order_id=client_order_id_in
-            )
-            kind = "LIMIT"
         elif order_type == "stop":
             if stop_price is None:
                 return {"success": False, "message": "❌ Missing stop_price for stop order"}
-            order_request = StopOrderRequest(
-                symbol=symbol_trade,
-                qty=qty_str,
-                side=side,
-                time_in_force=tif_enum,
-                stop_price=str(stop_price),
-                client_order_id=client_order_id_in
+            kind, order_request = _build(
+                "STOP",
+                lambda: StopOrderRequest(
+                    symbol=symbol_trade,
+                    qty=qty_str,
+                    side=side,
+                    time_in_force=tif_enum,
+                    stop_price=str(stop_price),
+                    client_order_id=client_order_id_in
+                ),
+                lambda: StopOrderRequest(
+                    symbol=symbol_trade,
+                    qty=qty_str,
+                    side=side,
+                    time_in_force=tif_enum,
+                    stop_price=str(stop_price),
+                )
             )
-            kind = "STOP"
         else:
             return {"success": False, "message": f"❌ Unsupported order type: {order_type}"}
 

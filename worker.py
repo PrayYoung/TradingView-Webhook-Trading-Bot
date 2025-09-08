@@ -5,6 +5,14 @@ from supabase import create_client
 from orderapi import order
 import logbot
 from flask import Blueprint, request, jsonify
+import requests
+from config import (
+    load_account_state,
+    update_account_state,
+    resolve_alpaca_for_alias,
+    get_or_set_day_open_equity,
+    get_equity_cached,
+)
 
 _last_report_key = None  # 全局变量：记录已发送日期
 
@@ -69,6 +77,92 @@ def _is_market_open(ts: datetime.datetime) -> bool:
     end = datetime.time(20, 0)
     return (t >= start) and (t <= end)
 
+def _parse_reset_time(cfg: dict) -> datetime.time:
+    v = (cfg or {}).get("reset_time_utc") or "00:05:00"
+    try:
+        hh, mm, ss = str(v).split(":")
+        return datetime.time(int(hh), int(mm), int(ss))
+    except Exception:
+        return datetime.time(0, 5, 0)
+
+def _is_after_reset_window(now_utc: datetime.datetime, cfg: dict) -> bool:
+    return now_utc.time() >= _parse_reset_time(cfg)
+
+def _count_open_positions(alias: str) -> int:
+    try:
+        key, sec, base, _paper = resolve_alpaca_for_alias(alias)
+        r = requests.get(
+            f"{base}/v2/positions",
+            headers={"APCA-API-KEY-ID": key, "APCA-API-SECRET-KEY": sec},
+            timeout=5,
+        )
+        if r.status_code == 404:
+            return 0
+        r.raise_for_status()
+        arr = r.json() or []
+        return len(arr)
+    except Exception as e:
+        logbot.logs(f"[Risk] positions fetch failed for {alias}: {e}", True)
+        return 0
+
+def _ensure_day_open_equity(sb, alias: str, cfg: dict, now_utc: datetime.datetime):
+    cur = get_or_set_day_open_equity(sb, alias, now_utc)
+    if cur is None and _is_after_reset_window(now_utc, cfg):
+        try:
+            eq = get_equity_cached(alias)
+            dkey = now_utc.strftime("%Y-%m-%d")
+            sb.table("daily_metrics").update({"equity": eq}).eq("d", dkey).eq("alias", alias).execute()
+            logbot.logs(f"[Risk] day_open_equity set for {alias} d={dkey} eq={eq}")
+        except Exception as e:
+            logbot.logs(f"[Risk] set day_open_equity failed: {e}", True)
+
+def risk_guard(sb, alias: str) -> None:
+    if (os.getenv("RISK_GUARD_DISABLED", "0").strip().lower() in ("1", "true", "yes")):
+        return
+    cfg = load_account_state(sb) or {}
+    if not cfg:
+        return
+    if not cfg.get("trading_enabled", True):
+        raise Exception("trading_disabled")
+
+    now = _now_utc()
+    _ensure_day_open_equity(sb, alias, cfg, now)
+
+    # Equity + HWM
+    eq = get_equity_cached(alias)
+    hwm = cfg.get("daily_high_watermark") or eq
+    if eq > float(hwm or 0):
+        update_account_state(sb, daily_high_watermark=eq)
+        hwm = eq
+
+    # Daily drawdown breaker
+    dd_limit = cfg.get("daily_dd_limit_pct")
+    if dd_limit is not None and (float(hwm or 0) > 0):
+        dd = (float(hwm) - float(eq)) / float(hwm)
+        if dd >= float(dd_limit):
+            update_account_state(sb, trading_enabled=False, daily_dd_triggered=True, pause_reason='daily_dd')
+            raise Exception("daily_drawdown_limit_reached")
+
+    # Absolute daily loss cap
+    dkey = now.strftime("%Y-%m-%d")
+    try:
+        row = sb.table("daily_metrics").select("equity").eq("d", dkey).eq("alias", alias).execute().data
+        day_open = float(row[0]["equity"]) if row and row[0].get("equity") is not None else None
+    except Exception:
+        day_open = None
+    loss_cap = cfg.get("daily_loss_cap_usd")
+    if (loss_cap is not None) and (day_open is not None):
+        if (float(eq) - float(day_open)) <= -float(loss_cap):
+            update_account_state(sb, trading_enabled=False, daily_dd_triggered=True, pause_reason='daily_loss_cap')
+            raise Exception("daily_loss_cap_reached")
+
+    # Max concurrent positions (account-level)
+    max_total = cfg.get("max_positions_total")
+    if max_total is not None:
+        cur_positions = _count_open_positions(alias)
+        if int(cur_positions) >= int(max_total):
+            raise Exception("max_positions_total_reached")
+
 def _safe_float(x, default=None):
     try:
         if x is None:
@@ -128,7 +222,12 @@ def process_one_by_id(queue_id: str):
 
         # Trading mode + base url guard（基于默认 base；若使用多账户，orderapi 内部会按 alias 取具体账户）
         trading_mode = (os.getenv("TRADING_MODE", "paper") or "paper").strip().lower()
-        base_env = _normalize_base_url(os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets"))
+        alias_for_mode = item.get("subaccount", "default")
+        try:
+            _k, _s, alias_base = resolve_alpaca_for_alias(alias_for_mode)
+            base_env = _normalize_base_url(alias_base)
+        except Exception:
+            base_env = _normalize_base_url(os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets"))
         if trading_mode == "paper" and "paper-api.alpaca.markets" not in base_env:
             raise Exception("mode_mismatch: paper expected")
         if trading_mode == "live" and "paper-api.alpaca.markets" in base_env:
@@ -137,6 +236,16 @@ def process_one_by_id(queue_id: str):
         # Market hours guard
         if not _is_market_open(_now_utc()):
             raise Exception("market_closed")
+
+        # Risk guard (blocks new entries only; no auto-flatten here)
+        try:
+            risk_guard(supabase, item.get("subaccount", "default"))
+        except Exception as rg:
+            supabase.table("order_queue").update({
+                "status": "failed",
+                "reason": str(rg)
+            }).eq("id", queue_id).execute()
+            return {"success": False, "message": str(rg)}
 
         # 从队列字段推导 bracket 价位（若 price/atr/trail_atr_mult 齐备）
         action = (item.get("action") or "").upper()
@@ -292,7 +401,7 @@ if __name__ == "__main__":
                 process_one_by_id(row["id"])
         except Exception as e:
             logbot.logs(f"[Worker] ❌ v2 poll error: {e}", True)
-        # 每天只运行一次的报表
-        _try_run_daily_report_once_per_day()
+        # 每天只运行一次的报表（可选开关）
+        if (os.getenv("ENABLE_DAILY_REPORT", "0").strip().lower() in ("1", "true", "yes")):
+            _try_run_daily_report_once_per_day()
         time.sleep(2)
-
