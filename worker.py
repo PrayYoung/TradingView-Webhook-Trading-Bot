@@ -44,9 +44,14 @@ def process():
                 # Step 2: Place the order
                 result = order(payload)
 
-                # Step 3: Mark as processed
-                supabase.table("webhook_queue").update({"status": "processed"}).eq("id", row_id).execute()
-                logbot.logs(f"[Worker] ✅ Order placed and marked processed")
+                # Step 3: Mark appropriately based on result
+                if isinstance(result, dict) and result.get("success"):
+                    supabase.table("webhook_queue").update({"status": "processed"}).eq("id", row_id).execute()
+                    logbot.logs(f"[Worker] ✅ Order placed and marked processed")
+                else:
+                    msg = (result or {}).get("message") if isinstance(result, dict) else None
+                    logbot.logs(f"[Worker] ❌ Order failed result; marking error. {msg}", True)
+                    supabase.table("webhook_queue").update({"status": "error"}).eq("id", row_id).execute()
 
             except Exception as e:
                 logbot.logs(f"[Worker] ❌ Order error: {e}", True)
@@ -286,14 +291,16 @@ def process_one_by_id(queue_id: str):
         }
         if pct is not None:
             payload_out["percentage"] = pct
-        if tp is not None and sl is not None:
+        tp_sl_attached = False
+        if action == "BUY" and tp is not None and sl is not None:
             payload_out["tp"] = tp
             payload_out["sl"] = sl
+            tp_sl_attached = True
 
         logbot.logs(
             f"[Worker] 🚀 v2 processing id={queue_id} clid={client_order_id} "
             f"{payload_out.get('strategy')} {payload_out.get('ticker')} {payload_out.get('subaccount')} "
-            f"tp/sl={'on' if ('tp' in payload_out) else 'off'}"
+            f"tp/sl={'on' if tp_sl_attached else 'off'}"
         )
 
         # ---------- Place order ----------

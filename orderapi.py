@@ -6,9 +6,10 @@ from alpaca.trading.requests import (
     LimitOrderRequest,
     StopOrderRequest,
     TakeProfitRequest,   # 新增：Bracket 的 TP 腿
-    StopLossRequest      # 新增：Bracket 的 SL 腿（非 StopOrderRequest）
+    StopLossRequest,     # 新增：Bracket 的 SL 腿（非 StopOrderRequest）
+    GetOrdersRequest,
 )
-from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass  # 新增 OrderClass
+from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass, QueryOrderStatus  # 新增 OrderClass
 from alpaca.data.historical import StockHistoricalDataClient, CryptoHistoricalDataClient
 from alpaca.data.requests import CryptoLatestQuoteRequest, StockLatestBarRequest
 from config import resolve_alpaca_for_alias
@@ -200,6 +201,29 @@ def order(payload):
             else:
                 qty_dec = pos_qty
             side = OrderSide.SELL
+
+            # 卖出前：取消该标的的未成交 SELL 方向挂单（通常为 bracket 子单）以避免冲突/过度对冲
+            try:
+                od_filter = GetOrdersRequest(
+                    status=QueryOrderStatus.OPEN,
+                    symbols=[symbol_trade],
+                    nested=True,
+                )
+                open_orders = trading_client.get_orders(filter=od_filter)
+                canceled_cnt = 0
+                for od in open_orders:
+                    try:
+                        od_side = str(getattr(od, "side", "")).lower()
+                        if od_side == "sell":
+                            trading_client.cancel_order_by_id(od.id)
+                            canceled_cnt += 1
+                    except Exception as ce:
+                        logbot.logs(f"[Order] cancel child sell order failed for {symbol_trade}: {ce}")
+                if canceled_cnt:
+                    logbot.logs(f"[Order] Canceled {canceled_cnt} open SELL orders for {symbol_trade} before SELL")
+            except Exception as e_can:
+                # 非关键路径，失败只记录日志
+                logbot.logs(f"[Order] fetch/cancel open orders failed for {symbol_trade}: {e_can}")
 
         else:
             return {"success": False, "message": f"❌ Unknown action: {action}"}
