@@ -35,6 +35,11 @@ def process():
         for row in pending_orders:
             row_id = row["id"]
             payload = row["data"]
+            if isinstance(payload, dict):
+                action_v1 = (payload.get("action") or "").upper()
+                if action_v1 == "SELL" and "percentage" in payload:
+                    payload = dict(payload)
+                    payload.pop("percentage", None)
             logbot.logs(f"[Worker] 🚀 Executing order: {payload}")
 
             try:

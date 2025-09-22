@@ -566,6 +566,29 @@ curl -s -X POST \
   }'
 ```
 
+### Sample v2 payload for TradingView alerts
+
+Use the same shape inside the TradingView alert message body ("Message" field). Replace the placeholders with the values that match your strategy and account:
+
+```json
+{
+  "passphrase": "<WEBHOOK_PASSPHRASE_V2>",
+  "strategy": "RSI50",
+  "ticker": "AAPL",
+  "timeframe": "1h",
+  "action": "buy",
+  "bar_time": 1713475200123,
+  "price": 180.12,
+  "atr": 2.5,
+  "subaccount": "paper"
+}
+```
+
+- `passphrase`: must match the long `WEBHOOK_PASSPHRASE_V2` set on the server.
+- `bar_time`: Unix epoch in **milliseconds**; TradingView lets you insert the placeholder `{{timenow}}` and multiply by 1000 if needed.
+- Optional keys (`price`, `atr`, `risk_pct`, `trail_atr_mult`, `subaccount`) are forwarded to Supabase and the worker. Leave them out if your strategy does not use them.
+- Update `action` per signal (`buy`, `sell`, etc.) and adjust `subaccount` to target aliases like `paper` or `live`.
+
 - Start with trading disabled or strategy paused: expect only `signals_raw` insert and response `{"status":"[v2] trading_disabled"}` or `{"status":"[v2] strategy_paused"}`.
 - Then enable trading and the strategy: expect `{"status":"[v2] queued","id":"<uuid>"}`, and best-effort worker kick.
 
