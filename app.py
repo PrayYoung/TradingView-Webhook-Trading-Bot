@@ -4,7 +4,7 @@ from flask import Flask, request, jsonify
 from orderapi import order
 from supabase import create_client, Client
 from v2_handler import tv_webhook_v2
-from worker import worker_bp
+from worker import worker_bp, _try_run_daily_report_once_per_day
 from datetime import datetime, timezone
 import requests
 
@@ -125,6 +125,11 @@ def run_worker():
             except Exception as e:
                 logbot.logs(f"[Worker] ❌ Order error: {e}", True)
                 supabase.table("webhook_queue").update({"status": "error"}).eq("id", row["id"]).execute()
+        if os.getenv("ENABLE_DAILY_REPORT", "0").strip().lower() in ("1", "true", "yes"):
+            try:
+                _try_run_daily_report_once_per_day()
+            except Exception as rpt_err:
+                logbot.logs(f"[Report] ❌ daily report via run-worker failed: {rpt_err}", True)
         return {"success": True, "message": "Worker run complete"}
     except Exception as e:
         logbot.logs(f"[Worker] ❌ Supabase poll error: {e}", True)
