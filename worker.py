@@ -181,6 +181,29 @@ def _safe_float(x, default=None):
     except Exception:
         return default
 
+
+def _safe_bool(x, default=False):
+    if isinstance(x, bool):
+        return x
+    if isinstance(x, (int, float)):
+        return bool(x)
+    if isinstance(x, str):
+        t = x.strip().lower()
+        if t in ("1", "true", "yes", "y", "on"):
+            return True
+        if t in ("0", "false", "no", "n", "off"):
+            return False
+    return default
+
+
+def _safe_str(x, default=""):
+    if x is None:
+        return default
+    try:
+        return str(x)
+    except Exception:
+        return default
+
 def claim_task(queue_id: str) -> bool:
     try:
         res = (
@@ -226,6 +249,8 @@ def process_one_by_id(queue_id: str):
 
         # -------- Build order payload (compute tp/sl if possible) --------
         payload = item.get("raw") or {}
+        flat_exit = _safe_bool(payload.get("flat_exit"), default=True)
+        after_hours_mode = _safe_str(payload.get("after_hours_mode"), default="").strip().lower()
         # Build idempotent client_order_id from queue_id
         qid_compact = queue_id.replace("-", "")
         client_order_id = ("q_" + qid_compact)[:30]
@@ -249,8 +274,13 @@ def process_one_by_id(queue_id: str):
             return ("/" in s) or s.endswith("USD") or s.endswith("USDT")
 
         ticker_raw = item.get("ticker")
-        if not _is_crypto_symbol(ticker_raw):
-            if not _is_market_open(_now_utc()):
+        market_open_now = _is_market_open(_now_utc())
+        if not _is_crypto_symbol(ticker_raw) and not market_open_now:
+            if after_hours_mode in ("allow", "opg", "market", "mkt", "opg_market"):
+                logbot.logs(
+                    f"[Worker] 🌙 after_hours_mode={after_hours_mode or 'allow'} bypassing market hours for {ticker_raw}"
+                )
+            else:
                 raise Exception("market_closed")
 
         # Risk guard (blocks new entries only; no auto-flatten here)
@@ -283,6 +313,8 @@ def process_one_by_id(queue_id: str):
 
         # 把 risk_pct 作为资金百分比映射给 orderapi 的 percentage（最小改动）
         pct = _safe_float(item.get("risk_pct"))
+        if action == "SELL" and flat_exit:
+            pct = None
         # 组装下单 payload
         payload_out = {
             "ticker": item.get("ticker"),
@@ -294,8 +326,15 @@ def process_one_by_id(queue_id: str):
             # Use GTC for crypto (Alpaca crypto doesn't support DAY); DAY for equities
             "time_in_force": ("gtc" if _is_crypto_symbol(item.get("ticker")) else "day"),
         }
+        if after_hours_mode in ("opg", "opg_market") and not _is_crypto_symbol(item.get("ticker")):
+            payload_out["time_in_force"] = "opg"
+            payload_out["order_type"] = "market"
+        elif after_hours_mode in ("allow", "market", "mkt") and not market_open_now:
+            payload_out["time_in_force"] = "day"
         if pct is not None:
             payload_out["percentage"] = pct
+        if action == "SELL" and flat_exit:
+            logbot.logs(f"[Worker] 🧹 flat_exit=True forcing full unload for {item.get('ticker')}")
         tp_sl_attached = False
         if action == "BUY" and tp is not None and sl is not None:
             payload_out["tp"] = tp

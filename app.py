@@ -112,6 +112,11 @@ def run_worker():
         result = supabase.table("webhook_queue").select("*").eq("status", "pending").execute()
         for row in result.data:
             payload = row["data"]
+            if isinstance(payload, dict):
+                action_v1 = (payload.get("action") or "").upper()
+                if action_v1 == "SELL" and "percentage" in payload:
+                    payload = dict(payload)
+                    payload.pop("percentage", None)
             logbot.logs(f"[Worker] Executing order: {payload}")
             try:
                 result = order(payload)
