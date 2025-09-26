@@ -1,8 +1,9 @@
-import os, json
+import os, json, re
 from datetime import datetime, timezone
 from flask import request, jsonify
 from supabase import create_client
 import requests
+import logbot
 
 # --- Env & Clients ---
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")
@@ -58,6 +59,20 @@ def _ms_to_utc_iso(ms) -> str:
     ms_int = int(ms)
     dt = datetime.fromtimestamp(ms_int / 1000, tz=timezone.utc)
     return dt.isoformat()  # e.g. "2025-09-06T23:40:12.345000+00:00"
+
+
+def _payload_preview(raw_bytes: bytes, max_len: int = 500) -> str:
+    if raw_bytes is None:
+        return "<empty>"
+    try:
+        txt = raw_bytes.decode("utf-8", errors="replace")
+    except Exception:
+        txt = str(raw_bytes)
+    txt = txt.strip()
+    txt = re.sub(r'("passphrase"\s*:\s*")([^"\\]*)(")', r'\1***\3', txt)
+    if len(txt) > max_len:
+        return txt[:max_len] + "…"
+    return txt
 
 def _insert_signal_raw(p: dict, key: str):
     sb.table("signals_raw").insert({
@@ -127,6 +142,10 @@ def tv_webhook_v2():
     try:
         data = request.get_json(force=True, silent=False)
     except Exception:
+        logbot.logs(
+            f"[v2] ⚠️ invalid json payload: { _payload_preview(request.data) }",
+            True,
+        )
         return jsonify({"error": "[v2] invalid json"}), 400
 
     # Passphrase (strict)
@@ -142,6 +161,10 @@ def tv_webhook_v2():
     # Required fields
     for k in ("strategy", "ticker", "timeframe", "action", "bar_time"):
         if k not in data:
+            logbot.logs(
+                f"[v2] ⚠️ missing field '{k}' in payload: { _payload_preview(request.data) }",
+                True,
+            )
             return jsonify({"error": f"[v2] missing {k}"}), 400
 
     # Default subaccount
@@ -151,13 +174,21 @@ def tv_webhook_v2():
     # Normalize action casing
     try:
         data["action"] = str(data["action"]).upper()
-    except Exception:
+    except Exception as act_err:
+        logbot.logs(
+            f"[v2] ⚠️ invalid action value: {act_err}; payload={ _payload_preview(request.data) }",
+            True,
+        )
         return jsonify({"error": "[v2] invalid action"}), 400
 
     # Normalize bar_time to ms
     try:
         data["bar_time"] = _coerce_bar_time_ms(data["bar_time"])
     except ValueError as bt_err:
+        logbot.logs(
+            f"[v2] ⚠️ invalid bar_time: {bt_err}; payload={ _payload_preview(request.data) }",
+            True,
+        )
         return jsonify({"error": f"[v2] invalid bar_time: {bt_err}"}), 400
 
     # Dedup
