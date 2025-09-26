@@ -26,10 +26,37 @@ def _dedup_exists(key: str) -> bool:
     d = sb.table("signals_raw").select("id").eq("dedup_key", key).execute().data
     return bool(d)
 
+def _coerce_bar_time_ms(raw) -> int:
+    if raw is None:
+        raise ValueError("bar_time missing")
+    # Numeric int/float (seconds or ms)
+    if isinstance(raw, (int, float)):
+        val = float(raw)
+        if val >= 1e11:  # already ms
+            return int(val)
+        if val >= 1e9:  # seconds precision
+            return int(val * 1000)
+        return int(val)
+    # String handling
+    s = str(raw).strip()
+    if not s:
+        raise ValueError("bar_time empty")
+    if s.isdigit():
+        return _coerce_bar_time_ms(int(s))
+    try:
+        # Allow ISO strings like 2025-09-26T13:32:30Z
+        iso = s.replace("Z", "+00:00").replace(" ", "T")
+        dt = datetime.fromisoformat(iso)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp() * 1000)
+    except Exception as e:
+        raise ValueError(f"invalid ISO bar_time: {raw}") from e
+
+
 def _ms_to_utc_iso(ms) -> str:
-    # 容忍字符串/浮点；统一转 int 毫秒
-    ms = int(ms)
-    dt = datetime.fromtimestamp(ms / 1000, tz=timezone.utc)
+    ms_int = int(ms)
+    dt = datetime.fromtimestamp(ms_int / 1000, tz=timezone.utc)
     return dt.isoformat()  # e.g. "2025-09-06T23:40:12.345000+00:00"
 
 def _insert_signal_raw(p: dict, key: str):
@@ -120,6 +147,18 @@ def tv_webhook_v2():
     # Default subaccount
     if "subaccount" not in data:
         data["subaccount"] = "default"
+
+    # Normalize action casing
+    try:
+        data["action"] = str(data["action"]).upper()
+    except Exception:
+        return jsonify({"error": "[v2] invalid action"}), 400
+
+    # Normalize bar_time to ms
+    try:
+        data["bar_time"] = _coerce_bar_time_ms(data["bar_time"])
+    except ValueError as bt_err:
+        return jsonify({"error": f"[v2] invalid bar_time: {bt_err}"}), 400
 
     # Dedup
     dedup_key = f"{data['strategy']}|{data['ticker']}|{data['timeframe']}|{data['bar_time']}|{data['action']}"

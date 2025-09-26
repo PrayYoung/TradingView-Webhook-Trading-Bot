@@ -589,6 +589,7 @@ Use the same shape inside the TradingView alert message body ("Message" field). 
 - Optional keys (`price`, `atr`, `risk_pct`, `trail_atr_mult`, `subaccount`, `flat_exit`, `after_hours_mode`) are forwarded to Supabase and the worker. Leave them out if your strategy does not use them.
 - `flat_exit`: defaults to `true`; SELL signals ignore `risk_pct` and flatten the full position unless you set `false`.
 - `after_hours_mode`: bypass the market-hours guard for equities. Use `allow`/`market`/`mkt` to submit the order immediately (market DAY), or `opg`/`opg_market` to force a market-on-open (`time_in_force = OPG`). Leave unset to require regular-session hours.
+- `bar_time`: accepts milliseconds since epoch or ISO strings like `2025-09-26T13:32:30Z`; both normalize to ms for deduping and storage.
 - Update `action` per signal (`buy`, `sell`, etc.) and adjust `subaccount` to target aliases like `paper` or `live`.
 
 - Start with trading disabled or strategy paused: expect only `signals_raw` insert and response `{"status":"[v2] trading_disabled"}` or `{"status":"[v2] strategy_paused"}`.
