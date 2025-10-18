@@ -143,6 +143,8 @@ def order(payload):
 
     percentage = payload.get("percentage", None)   # 0.3 表示 30%
     qty_in = payload.get("qty", None)              # 显式数量优先
+    max_slots_raw = payload.get("max_slots", None)
+    buffer_ratio_raw = payload.get("buffer_ratio", None)
     order_type = (payload.get("order_type", "market") or "").lower()
     tif = (payload.get("time_in_force", "gtc") or "gtc").lower()
 
@@ -171,6 +173,17 @@ def order(payload):
         # ---------- 方向：BUY / SELL ----------
         if action == "BUY":
             # qty 明确则优先，其次 percentage，最后默认 1
+            max_slots = None
+            if max_slots_raw is not None:
+                try:
+                    max_slots_int = int(Decimal(str(max_slots_raw)))
+                    if max_slots_int > 0:
+                        max_slots = max_slots_int
+                    else:
+                        logbot.logs(f"[Order] Ignoring non-positive max_slots={max_slots_raw}")
+                except Exception:
+                    logbot.logs(f"[Order] Invalid max_slots value: {max_slots_raw}")
+
             if qty_in is not None:
                 qty_dec = Decimal(str(qty_in))
             elif percentage:
@@ -179,6 +192,59 @@ def order(payload):
                     raise Exception("No price data")
                 buying_power = Decimal(str(trading_client.get_account().cash))
                 qty_dec = (buying_power * Decimal(str(percentage))) / Decimal(str(price))
+            elif max_slots:
+                # ---- max_slots sizing ----
+                account = trading_client.get_account()
+                try:
+                    equity = Decimal(str(account.equity))
+                except Exception:
+                    raise Exception("Failed to load account equity for max_slots sizing")
+
+                buffer_ratio = Decimal("0.05")
+                if buffer_ratio_raw is not None:
+                    try:
+                        buffer_ratio = Decimal(str(buffer_ratio_raw))
+                    except Exception:
+                        logbot.logs(f"[Order] Invalid buffer_ratio value: {buffer_ratio_raw}, defaulting to 0.05")
+                if buffer_ratio < Decimal("0"):
+                    logbot.logs(f"[Order] buffer_ratio < 0 ({buffer_ratio}); clamping to 0")
+                    buffer_ratio = Decimal("0")
+                if buffer_ratio >= Decimal("1"):
+                    logbot.logs(f"[Order] buffer_ratio >= 1 ({buffer_ratio}); clamping to 0.95")
+                    buffer_ratio = Decimal("0.95")
+
+                available_equity = equity * (Decimal("1") - buffer_ratio)
+                if available_equity <= Decimal("0"):
+                    raise Exception("Available equity is non-positive after buffer_ratio adjustment")
+
+                try:
+                    positions = trading_client.get_all_positions()
+                except Exception as pos_err:
+                    raise Exception(f"Failed to fetch open positions: {pos_err}")
+                open_slots = sum(
+                    1 for p in positions
+                    if Decimal(str(getattr(p, "qty", "0"))).copy_abs() > Decimal("0")
+                )
+                if open_slots >= max_slots:
+                    msg = (
+                        f"Skipped BUY for {symbol_trade}: open positions {open_slots} "
+                        f"already at/above max_slots {max_slots}"
+                    )
+                else:
+                    target_value = available_equity / Decimal(str(max_slots))
+                    price = get_latest_price(symbol_raw, stock_client, crypto_client)
+                    if not price:
+                        raise Exception("No price data")
+                    qty_dec = target_value / Decimal(str(price))
+                    if qty_dec <= Decimal("0"):
+                        raise Exception("Calculated quantity is non-positive with max_slots sizing")
+                    logbot.logs(
+                        f"[Order] max_slots sizing -> equity {equity} buffer {buffer_ratio} "
+                        f"target_value {target_value} qty {qty_dec}"
+                    )
+                if open_slots >= max_slots:
+                    logbot.logs(f"[Order] {msg}")
+                    return {"success": True, "message": msg}
             else:
                 qty_dec = Decimal("1")
             side = OrderSide.BUY

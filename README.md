@@ -586,8 +586,10 @@ Use the same shape inside the TradingView alert message body ("Message" field). 
 
 - `passphrase`: must match the long `WEBHOOK_PASSPHRASE_V2` set on the server.
 - `bar_time`: Unix epoch in **milliseconds**; TradingView lets you insert the placeholder `{{timenow}}` and multiply by 1000 if needed.
-- Optional keys (`price`, `atr`, `risk_pct`, `trail_atr_mult`, `subaccount`, `flat_exit`, `after_hours_mode`) are forwarded to Supabase and the worker. Leave them out if your strategy does not use them.
+- Optional keys (`price`, `atr`, `risk_pct`, `trail_atr_mult`, `subaccount`, `flat_exit`, `after_hours_mode`, `max_slots`, `buffer_ratio`) are forwarded to Supabase and the worker. Leave them out if your strategy does not use them.
 - `flat_exit`: defaults to `true`; SELL signals ignore `risk_pct` and flatten the full position unless you set `false`.
+- `max_slots`: cap the number of concurrent long positions; when `qty`/`percentage` are omitted the worker divides usable equity (`equity × (1 - buffer_ratio)`, default buffer 5%) equally across the slot count.
+- `buffer_ratio`: optional reserve fraction (e.g. `0.1` keeps 10% cash idle); ignored unless `max_slots` is set.
 - `after_hours_mode`: bypass the market-hours guard for equities. Use `allow`/`market`/`mkt` to submit the order immediately (market DAY), or `opg`/`opg_market` to force a market-on-open (`time_in_force = OPG`). Leave unset to require regular-session hours.
 - `bar_time`: accepts milliseconds since epoch or ISO strings like `2025-09-26T13:32:30Z`; both normalize to ms for deduping and storage.
 - Update `action` per signal (`buy`, `sell`, etc.) and adjust `subaccount` to target aliases like `paper` or `live`.
