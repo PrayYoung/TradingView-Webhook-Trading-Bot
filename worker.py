@@ -336,10 +336,17 @@ def process_one_by_id(queue_id: str):
         if action == "SELL" and flat_exit:
             logbot.logs(f"[Worker] 🧹 flat_exit=True forcing full unload for {item.get('ticker')}")
         tp_sl_attached = False
-        if item.get("max_slots") is not None:
-            payload_out["max_slots"] = item.get("max_slots")
-        if item.get("buffer_ratio") is not None:
-            payload_out["buffer_ratio"] = item.get("buffer_ratio")
+        max_slots_cfg = item.get("max_slots")
+        if max_slots_cfg is None:
+            max_slots_cfg = payload.get("max_slots")
+        if max_slots_cfg is not None:
+            payload_out["max_slots"] = max_slots_cfg
+
+        buffer_ratio_cfg = item.get("buffer_ratio")
+        if buffer_ratio_cfg is None:
+            buffer_ratio_cfg = payload.get("buffer_ratio")
+        if buffer_ratio_cfg is not None:
+            payload_out["buffer_ratio"] = buffer_ratio_cfg
         if action == "BUY" and tp is not None and sl is not None:
             payload_out["tp"] = tp
             payload_out["sl"] = sl
