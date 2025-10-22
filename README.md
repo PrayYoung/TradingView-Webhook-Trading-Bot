@@ -613,7 +613,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS orders_client_order_id_uniq
 ALTER TABLE public.order_queue
   ADD COLUMN IF NOT EXISTS retry_count int DEFAULT 0,
   ADD COLUMN IF NOT EXISTS last_error text,
-  ADD COLUMN IF NOT EXISTS next_attempt_at timestamptz;
+  ADD COLUMN IF NOT EXISTS next_attempt_at timestamptz,
+  ADD COLUMN IF NOT EXISTS max_slots int,
+  ADD COLUMN IF NOT EXISTS buffer_ratio numeric;
 CREATE INDEX IF NOT EXISTS order_queue_status_next_attempt_idx
   ON public.order_queue (status, next_attempt_at);
 

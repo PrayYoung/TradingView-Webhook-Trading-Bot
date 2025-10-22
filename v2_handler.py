@@ -117,6 +117,8 @@ def _enqueue_order(data: dict) -> str:
         "trail_atr_mult": data.get("trail_atr_mult"),
         "bar_time": _ms_to_utc_iso(data["bar_time"]),
         "subaccount": data.get("subaccount", "default"),
+        "max_slots": data.get("max_slots"),
+        "buffer_ratio": data.get("buffer_ratio"),
         "raw": data,
     }).execute()
     return resp.data[0]["id"]
