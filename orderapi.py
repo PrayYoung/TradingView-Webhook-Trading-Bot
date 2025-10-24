@@ -122,8 +122,12 @@ def get_latest_price(symbol_raw: str, stock_client: StockHistoricalDataClient, c
 
     # ---- Stock ----
     try:
-        bar_map = stock_client.get_latest_bar(StockLatestBarRequest(symbol_or_symbols=[symbol_raw]))
-        return float(bar_map[symbol_raw].close)
+        request = StockLatestBarRequest(symbol_or_symbols=[symbol_raw])
+        bar_map = stock_client.get_stock_latest_bar(request)
+        bar = bar_map.get(symbol_raw) or bar_map.get(symbol_raw.upper())
+        if bar:
+            return float(bar.close)
+        raise KeyError(f"No latest bar for {symbol_raw}")
     except Exception as e2:
         logbot.logs(f"[Price] Stock quote failed for {symbol_raw}: {e2}", True)
 
